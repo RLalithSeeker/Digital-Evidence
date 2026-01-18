@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { ethers } from 'ethers'
+import { Shield, UploadCloud, Search, FileText, Loader2, CheckCircle, AlertCircle, Wallet, FileCheck } from 'lucide-react'
 import './App.css'
 import EvidenceAbi from './contracts/Evidence.json'
 import EvidenceAddress from './contracts/Evidence-address.json'
@@ -8,10 +9,15 @@ function App() {
   const [account, setAccount] = useState(null)
   const [contract, setContract] = useState(null)
 
+  // Dashboard State
+  const [evidenceList, setEvidenceList] = useState([])
+  const [isLoadingList, setIsLoadingList] = useState(false)
+
   // Upload State
   const [caseId, setCaseId] = useState('')
   const [file, setFile] = useState(null)
   const [uploadStatus, setUploadStatus] = useState('')
+  const [isUploading, setIsUploading] = useState(false)
 
   // Verify State
   const [verifyHash, setVerifyHash] = useState('')
@@ -21,11 +27,13 @@ function App() {
   const [showReport, setShowReport] = useState(false)
   const [reportData, setReportData] = useState(null)
 
-  // MOCK IPFS Handler (Simulated for PoC)
-  const mockUploadToIPFS = async (file) => {
-    // In a real system, use ipfs-http-client here.
-    // For PoC, we generate a pseudo-hash based on file name and time.
-    return "Qm" + ethers.id(file.name + Date.now()).substring(2, 48);
+  // --- Requirement 3: Simulated IPFS (SHA-256 Hashing) ---
+  const generateHash = async (file) => {
+    const arrayBuffer = await file.arrayBuffer();
+    const hashBuffer = await window.crypto.subtle.digest('SHA-256', arrayBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    return hashHex;
   }
 
   const connectWallet = async () => {
@@ -41,7 +49,6 @@ function App() {
             params: [{ chainId: '0x539' }], // Chain ID 1337
           });
         } catch (switchError) {
-          // This error code indicates that the chain has not been added to MetaMask.
           if (switchError.code === 4902) {
             try {
               await window.ethereum.request({
@@ -57,13 +64,13 @@ function App() {
               console.error("Failed to add network", addError);
             }
           }
-          // Handle other errors (like user rejection)
         }
 
         const provider = new ethers.BrowserProvider(window.ethereum)
         const signer = await provider.getSigner()
         const evidenceContract = new ethers.Contract(EvidenceAddress.address, EvidenceAbi.abi, signer)
         setContract(evidenceContract)
+        // Ideally load evidence here if we had a "getAllEvidence" or specific case to load
       } catch (error) {
         console.error("Connection failed", error)
         alert("Failed to connect wallet.")
@@ -84,20 +91,39 @@ function App() {
     if (!contract || !file || !caseId) return;
 
     try {
-      setUploadStatus("Uploading to IPFS (Simulated)...")
-      const ipfsHash = await mockUploadToIPFS(file)
+      setIsUploading(true)
+      setUploadStatus("Hashing File (SHA-256)...")
 
-      setUploadStatus("Waiting for user signature...")
-      const tx = await contract.uploadEvidence(ipfsHash, caseId)
+      // Phase 3: Simulated IPFS / Local Hashing
+      const fileHash = await generateHash(file)
+      console.log("Generated SHA-256 Hash:", fileHash)
 
-      setUploadStatus("Transaction pending...")
+      setUploadStatus("Awaiting Blockchain Signature...")
+      // Call Phase 3 Smart Contract Function
+      const tx = await contract.uploadEvidence(caseId, fileHash, file.name)
+
+      setUploadStatus("Mining Transaction...")
       await tx.wait()
 
-      setUploadStatus(`Success! Evidence Hash: ${ipfsHash}`)
-      setVerifyHash(ipfsHash) // Auto-fill verify for convenience
+      setUploadStatus(`Evidence Secured! Hash: ${fileHash.substring(0, 10)}...`)
+      setVerifyHash(fileHash)
+
+      // Update local list (Mock update since we don't have a global getter in contract yet)
+      const newRecord = {
+        id: Date.now(), // Temporary ID for UI
+        caseId: caseId,
+        fileName: file.name,
+        fileHash: fileHash,
+        uploader: account,
+        timestamp: new Date().toLocaleString()
+      }
+      setEvidenceList(prev => [newRecord, ...prev])
+
     } catch (error) {
       console.error(error)
       setUploadStatus("Upload Failed: " + (error.reason || error.message))
+    } finally {
+      setIsUploading(false)
     }
   }
 
@@ -106,28 +132,61 @@ function App() {
     if (!contract || !verifyHash) return;
 
     try {
-      const result = await contract.verifyEvidence(verifyHash)
-      // result: [ipfsHash, caseId, uploader, timestamp]
-      const timestamp = new Date(Number(result[3]) * 1000).toLocaleString()
+      // Phase 3: Integrity Check
+      const isValid = await contract.verifyIntegrity(verifyHash)
 
-      setVerificationResult({
-        ipfsHash: result[0],
-        caseId: result[1],
-        uploader: result[2],
-        timestamp: timestamp,
-        status: "Valid & On-Chain"
-      })
-      setReportData({
-        ipfsHash: result[0],
-        caseId: result[1],
-        uploader: result[2],
-        timestamp: timestamp
-      })
+      if (isValid) {
+        setVerificationResult({
+          status: "Valid & On-Chain",
+          fileHash: verifyHash
+          // Note: Phase 3 contract verifyIntegrity only returns bool. 
+          // To get details we'd need to query by Case ID or have a mapping by Hash -> Record
+        })
+        // For report generation, we try to find it in our local list or just use what we have
+        const foundLocal = evidenceList.find(e => e.fileHash === verifyHash)
+        if (foundLocal) {
+          setReportData(foundLocal)
+        } else {
+          // Minimal report data
+          setReportData({
+            caseId: "Unknown (Query by Case ID for details)",
+            fileHash: verifyHash,
+            uploader: "Verified On-Chain",
+            timestamp: "Verified On-Chain"
+          })
+        }
+      } else {
+        setVerificationResult({ status: "Not Found / Invalid" })
+      }
     } catch (error) {
-      setVerificationResult({ status: "Not Found / Invalid" })
+      console.error(error)
+      setVerificationResult({ status: "Error Verifying" })
     }
   }
 
+  const fetchEvidenceByCase = async () => {
+    if (!contract || !caseId) return;
+    setIsLoadingList(true)
+    try {
+      const records = await contract.getEvidenceByCase(caseId)
+      // Transform struct to UI object
+      const formattedRecords = records.map(r => ({
+        id: r.id.toString(),
+        caseId: r.caseId,
+        fileHash: r.fileHash,
+        fileName: r.fileName,
+        uploader: r.uploader,
+        timestamp: new Date(Number(r.timestamp) * 1000).toLocaleString()
+      }))
+      setEvidenceList(formattedRecords)
+    } catch (error) {
+      console.error("Fetch failed", error)
+    } finally {
+      setIsLoadingList(false)
+    }
+  }
+
+  // --- Requirement 4: Section 65B Compliance Report ---
   const generateReport = () => {
     setShowReport(true)
     setTimeout(() => window.print(), 500)
@@ -136,90 +195,155 @@ function App() {
   return (
     <div className="container">
       <header>
-        <h1>⛓️ Digital Evidence Preservation</h1>
+        <h1>
+          <Shield className="icon-logo" size={32} /> Digital Evidence Vault
+        </h1>
         {!account ? (
-          <button onClick={connectWallet} className="primary-btn">Connect Wallet</button>
+          <button onClick={connectWallet} className="primary-btn">
+            <Wallet size={18} /> Connect Wallet
+          </button>
         ) : (
-          <p className="status">Connected: {account.substring(0, 6)}...{account.substring(38)}</p>
+          <div className="status">
+            <span className="live-indicator">●</span>
+            {account.substring(0, 6)}...{account.substring(38)}
+          </div>
         )}
       </header>
 
       <main>
         {/* Upload Section */}
-        <section className="card">
-          <h2>📤 Upload Evidence</h2>
+        <section className="glass-card">
+          <h2><UploadCloud className="icon-title" /> Phase 3: Secure Upload</h2>
           <form onSubmit={handleUpload}>
             <div className="form-group">
-              <label>Case ID</label>
+              <label>Case Reference ID</label>
               <input
                 type="text"
-                placeholder="Ex: CASE-2024-001"
+                placeholder="Ex: CASE-2024-X1"
                 value={caseId}
                 onChange={(e) => setCaseId(e.target.value)}
               />
             </div>
             <div className="form-group">
-              <label>Select File</label>
-              <input type="file" onChange={handleFileChange} />
+              <label>Digital Asset (Auto-Hashed locally)</label>
+              <div className="file-input-wrapper">
+                <input type="file" onChange={handleFileChange} />
+              </div>
             </div>
-            <button type="submit" disabled={!contract} className="action-btn">
-              Secure Upload
+            <button type="submit" disabled={!contract || isUploading} className="action-btn">
+              {isUploading ? <Loader2 className="spin" /> : <Shield size={20} />}
+              {isUploading ? " Hashing & Uploading..." : (contract ? " Secure Evidence On-Chain" : " Connect Wallet to Upload")}
             </button>
           </form>
-          {uploadStatus && <p className="status-msg">{uploadStatus}</p>}
+          {uploadStatus && (
+            <div className="status-msg">
+              {isUploading ? <Loader2 className="spin" size={16} /> : <CheckCircle size={16} />}
+              <span>{uploadStatus}</span>
+            </div>
+          )}
+        </section>
+
+        {/* Evidence Dashboard */}
+        <section className="glass-card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h2><FileCheck className="icon-title" /> Evidence Dashboard</h2>
+            <button onClick={fetchEvidenceByCase} disabled={!caseId || !contract} className="secondary-btn" style={{ padding: '0.5rem 1rem', fontSize: '0.9rem' }}>
+              Load Case Data
+            </button>
+          </div>
+
+          {isLoadingList ? <p className="status-msg"><Loader2 className="spin" /> Loading...</p> : (
+            <div className="table-responsive">
+              {evidenceList.length > 0 ? (
+                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', marginTop: '1rem', color: '#cbd5e1' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid #334155' }}>
+                      <th style={{ padding: '10px' }}>ID</th>
+                      <th style={{ padding: '10px' }}>File Name</th>
+                      <th style={{ padding: '10px' }}>Hash (SHA-256)</th>
+                      <th style={{ padding: '10px' }}>Timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {evidenceList.map((item, index) => (
+                      <tr key={index} style={{ borderBottom: '1px solid #1e293b' }}>
+                        <td style={{ padding: '10px' }}>{item.id}</td>
+                        <td style={{ padding: '10px' }}>{item.fileName}</td>
+                        <td style={{ padding: '10px', fontFamily: 'monospace', fontSize: '0.85rem' }}>{item.fileHash.substring(0, 12)}...</td>
+                        <td style={{ padding: '10px', fontSize: '0.85rem' }}>{item.timestamp}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p style={{ textAlign: 'center', color: '#64748b', marginTop: '1rem' }}>No evidence loaded for this case.</p>
+              )}
+            </div>
+          )}
         </section>
 
         {/* Verify Section */}
-        <section className="card">
-          <h2>🔍 Verify Evidence</h2>
+        <section className="glass-card">
+          <h2><Search className="icon-title" /> Verify Integrity</h2>
           <div className="form-group">
-            <input
-              type="text"
-              placeholder="Enter IPFS Hash / Evidence ID"
-              value={verifyHash}
-              onChange={(e) => setVerifyHash(e.target.value)}
-            />
-            <button onClick={handleVerify} disabled={!contract} className="secondary-btn">Verify</button>
+            <label>Digital Fingerprint (SHA-256)</label>
+            <div className="search-bar">
+              <input
+                type="text"
+                placeholder="Paste SHA-256 Hash..."
+                value={verifyHash}
+                onChange={(e) => setVerifyHash(e.target.value)}
+              />
+              <button onClick={handleVerify} disabled={!contract} className="secondary-btn">
+                <Search size={18} /> Verify
+              </button>
+            </div>
           </div>
 
           {verificationResult && (
             <div className={`result-box ${verificationResult.status === "Valid & On-Chain" ? "valid" : "invalid"}`}>
-              <h3>Status: {verificationResult.status}</h3>
-              {verificationResult.caseId && (
-                <>
-                  <p><strong>Case ID:</strong> {verificationResult.caseId}</p>
-                  <p><strong>Uploader:</strong> {verificationResult.uploader}</p>
-                  <p><strong>Timestamp:</strong> {verificationResult.timestamp}</p>
-                  <button onClick={generateReport} className="report-btn">📄 Generate Legal Report (Section 65B)</button>
-                </>
+              <h3>
+                {verificationResult.status === "Valid & On-Chain" ? <CheckCircle /> : <AlertCircle />}
+                Status: {verificationResult.status}
+              </h3>
+              {verificationResult.status === "Valid & On-Chain" && reportData && (
+                <button onClick={generateReport} className="report-btn">
+                  <FileText size={18} /> Generate Section 65B Certificate
+                </button>
               )}
             </div>
           )}
         </section>
       </main>
 
-      {/* Legal Report Overlay (Visible only when generating) */}
+      {/* Legal Report Overlay */}
       {showReport && reportData && (
         <div className="print-overlay" onClick={() => setShowReport(false)}>
           <div className="certificate">
             <h1>Certificate of Electronic Evidence (Section 65B)</h1>
             <p className="cert-meta">Generated via Private Consortium Blockchain</p>
-            <hr />
+            <hr style={{ margin: '20px 0', borderColor: '#000' }} />
             <div className="cert-body">
-              <p><strong>Case Reference:</strong> {reportData.caseId}</p>
-              <p><strong>Digital Fingerprint (Hash):</strong> <br /><code>{reportData.ipfsHash}</code></p>
-              <p><strong>Uploaded By (Officer ID):</strong> <br />{reportData.uploader}</p>
-              <p><strong>Blockchain Timestamp:</strong> {reportData.timestamp}</p>
-              <p><strong>Verification Status:</strong> IMMUTABLE & VERIFIED</p>
+              <p><strong>I, Officer [ {account} ], certify that:</strong></p>
+              <br />
+              <p>The electronic record identified below was recorded on the secure Blockchain Ledger and has been maintained in a secure environment.</p>
+
+              <ul style={{ listStyle: 'none', padding: 0, marginTop: '20px' }}>
+                <li><strong>Case Reference:</strong> {reportData.caseId}</li>
+                <li><strong>File Name:</strong> {reportData.fileName || "N/A (Hash Verification Only)"}</li>
+                <li><strong>Digital Fingerprint (SHA-256):</strong> <br /><code style={{ fontSize: '0.9rem' }}>{reportData.fileHash}</code></li>
+                <li><strong>Timestamp of Record:</strong> {reportData.timestamp}</li>
+              </ul>
+
+              <p style={{ marginTop: '20px' }}>The computer output containing the information was produced by the computer during the period over which the computer was used regularly to store or process information for the purposes of any activities regularly carried on over that period by the person having lawful control over the use of the computer.</p>
             </div>
             <div className="cert-footer">
-              <p>This document certifies that the electronic record identified above has been preserved on a secure blockchain ledger and has not been tampered with.</p>
               <div className="signatures">
-                <div>______________________<br />Authorized Signatory</div>
+                <div>______________________<br />Authorized Signatory<br />(Officer)</div>
                 <div>______________________<br />Date</div>
               </div>
             </div>
-            <button className="no-print close-btn" onClick={(e) => { e.stopPropagation(); setShowReport(false) }}>Close</button>
+            <button className="no-print close-btn" onClick={(e) => { e.stopPropagation(); setShowReport(false) }}>Close Preview</button>
           </div>
         </div>
       )}

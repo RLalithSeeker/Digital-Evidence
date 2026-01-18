@@ -2,27 +2,33 @@
 pragma solidity ^0.8.28;
 
 /**
- * @title Digital Evidence Preservation Contract
+ * @title Digital Evidence Preservation Contract (Phase 3)
  * @dev Stores evidence metadata on-chain with role-based access control.
  */
 contract Evidence {
     
-    // Structure to hold evidence details
+    // Struct to hold evidence details
     struct EvidenceRecord {
-        string ipfsHash;    // IPFS Hash of the file
-        string caseId;      // Case ID associated with the evidence
+        uint256 id;
+        string caseId;
+        string fileHash;    // Digital Fingerprint (SHA-256)
+        string fileName;
         address uploader;   // Address of the officer who uploaded
         uint256 timestamp;  // Block timestamp of upload
     }
 
-    // Mapping from IPFS Hash to Evidence Record
-    mapping(string => EvidenceRecord) public evidenceRecords;
-    
-    // List of authorized officers
+    // Array to store all evidence IDs (for counting)
+    uint256 private _evidenceIds;
+
+    // Mappings
+    mapping(string => EvidenceRecord[]) private evidenceByCase; // caseId => Evidence List
+    mapping(string => bool) public fileHashExists;             // fast existence check
+
+    // Mapping of authorized officers
     mapping(address => bool) public authorizedOfficers;
 
     // Event emitted when evidence is uploaded
-    event EvidenceUploaded(string ipfsHash, string caseId, address indexed uploader, uint256 timestamp);
+    event EvidenceUploaded(string indexed caseId, string fileHash, string fileName, address indexed uploader, uint256 timestamp);
 
     address public owner;
 
@@ -40,22 +46,45 @@ contract Evidence {
 
     /**
      * @dev Uploads evidence metadata to the blockchain.
-     * @param _ipfsHash The IPFS hash of the uploaded file.
      * @param _caseId The case ID associated with the evidence.
+     * @param _fileHash The SHA-256 hash of the uploaded file.
+     * @param _fileName The name of the file.
      */
-    function uploadEvidence(string memory _ipfsHash, string memory _caseId) public onlyOfficer {
+    function uploadEvidence(string memory _caseId, string memory _fileHash, string memory _fileName) public onlyOfficer {
         // Ensure evidence doesn't already exist for this hash
-        require(bytes(evidenceRecords[_ipfsHash].ipfsHash).length == 0, "Evidence already exists");
+        require(!fileHashExists[_fileHash], "Evidence integrity check failed: Duplicate Hash");
 
-        // Create record
-        evidenceRecords[_ipfsHash] = EvidenceRecord({
-            ipfsHash: _ipfsHash,
+        _evidenceIds++;
+        uint256 newId = _evidenceIds;
+
+        EvidenceRecord memory newEvidence = EvidenceRecord({
+            id: newId,
             caseId: _caseId,
+            fileHash: _fileHash,
+            fileName: _fileName,
             uploader: msg.sender,
             timestamp: block.timestamp
         });
 
-        emit EvidenceUploaded(_ipfsHash, _caseId, msg.sender, block.timestamp);
+        // Store in mappings
+        evidenceByCase[_caseId].push(newEvidence);
+        fileHashExists[_fileHash] = true;
+
+        emit EvidenceUploaded(_caseId, _fileHash, _fileName, msg.sender, block.timestamp);
+    }
+
+    /**
+     * @dev Returns all evidence for a specific case.
+     */
+    function getEvidenceByCase(string memory _caseId) public view returns (EvidenceRecord[] memory) {
+        return evidenceByCase[_caseId];
+    }
+    
+    /**
+     * @dev Verifies if a file hash exists on-chain.
+     */
+    function verifyIntegrity(string memory _fileHash) public view returns (bool) {
+        return fileHashExists[_fileHash];
     }
 
     /**
@@ -64,14 +93,5 @@ contract Evidence {
     function addOfficer(address _officer) public {
         require(msg.sender == owner, "Only owner can add officers");
         authorizedOfficers[_officer] = true;
-    }
-    
-    /**
-     * @dev Verifies if evidence exists and returns details.
-     */
-    function verifyEvidence(string memory _ipfsHash) public view returns (string memory, string memory, address, uint256) {
-        require(bytes(evidenceRecords[_ipfsHash].ipfsHash).length != 0, "Evidence not found");
-        EvidenceRecord memory record = evidenceRecords[_ipfsHash];
-        return (record.ipfsHash, record.caseId, record.uploader, record.timestamp);
     }
 }

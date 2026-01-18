@@ -22,7 +22,7 @@ async function main() {
     fs.mkdirSync(frontendDir, { recursive: true });
   }
 
-  const artifact = artifacts.readArtifactSync("Evidence");
+  const artifact = await hre.artifacts.readArtifact("Evidence");
 
   fs.writeFileSync(
     path.join(frontendDir, "Evidence-address.json"),
